@@ -4,6 +4,7 @@
 #include <vector>
 #include <utility>
 #include <stack>
+#include <map>
 #include <set>
 #include <list>
 #include <algorithm>
@@ -84,6 +85,8 @@ typedef std::set<unsigned> SetOfVertices;
 typedef std::vector<SetOfVertices> Neighbours;
 //! Vector of bits that indicate presence of some edge in the graph.
 typedef std::vector<bool> ValidEdges;
+//! Mapping of pairs of vertices to sets of their common successors.
+typedef std::map<std::pair<unsigned, unsigned>, std::vector<unsigned> > PairsToCommonSucc;
 
 
 //! Number of vertices in graph.
@@ -103,6 +106,9 @@ Graph * graph = 0;
   Vector of sets of neighbouring vertices for each vertex. For fast triangle
   testing.  */
 Neighbours neighbours;
+
+//! Map of pairs of vertices to their common successors.
+PairsToCommonSucc common_succ;
 
 /*!
   \brief Bitmap mapping integers for all possible edges to booleans,
@@ -178,7 +184,6 @@ std::pair<bool, bool>
 check_triangle (StackElem const & el, unsigned edge)
 {
   assert (edges[edge]);
-  //assert (el.valid[edge]);
 
   unsigned const v1 = edgeinfo[edge].v1;
   unsigned const v2 = edgeinfo[edge].v2;
@@ -186,24 +191,20 @@ check_triangle (StackElem const & el, unsigned edge)
   if (v1 == v2)
     return std::make_pair (false, false);
   
-  /*
-    Intersection of sets of neighbours of vertices that make edge gives us
-    candidates vertices for triangle.  */
-  //typedef std::list<unsigned> CommonVertices;
-  typedef std::vector<unsigned> CommonVertices;
-  CommonVertices common;
-  common.reserve (N - 1);
-  std::set_intersection (neighbours[v1-1].begin (), neighbours[v1-1].end (),
-                         neighbours[v2-1].begin (), neighbours[v2-1].end (),
-                         std::back_inserter (common));
-
+  // Find set of common successors.
+  PairsToCommonSucc::const_iterator set_it = 
+    common_succ.find (std::make_pair (v1, v2));
+  assert (set_it != common_succ.end ());
+  std::vector<unsigned>::const_iterator it = set_it->second.begin ();
+  std::vector<unsigned>::const_iterator const it_end = set_it->second.end ();
+  
   /*
     Test if candidate edges have the same colour. Loop until we either test
     all vertices or until we determine that adding vertex of either colour
     would create a triangle.  */
   std::pair<bool, bool> res (false, false);
-  for (CommonVertices::const_iterator it = common.begin ();
-       it != common.end () && !(res.first && res.second);
+  for (;
+       it != it_end && !(res.first && res.second);
        ++it)
     {
       unsigned const u = *it;
@@ -288,11 +289,34 @@ read_graph (std::istream & infile)
             last = idx;
 
             // Debug.
-            std::cout << "edge " << idx << " vertices (" << j << ", " << i << ")";
+            std::cout << "edge " << idx 
+                      << " vertices (" << j << ", " << i << ")";
           }
       }
   // The last edge doesn't have any successor.
   edgeinfo[last].next = std::numeric_limits<unsigned>::max ();
+
+  // Pre-compute sets of common successor vertices.
+  for (unsigned i = first_edge; i < max_edges; ++i)
+    {
+      // Rule out non-existing edges.
+      if (! edges[i])
+        continue;
+      
+      unsigned const v1 = edgeinfo[i].v1;
+      unsigned const v2 = edgeinfo[i].v2;
+
+      // Insert new set of vertices into cache.
+      PairsToCommonSucc::iterator set_it = 
+        common_succ.insert (std::make_pair (std::make_pair (v1, v2), 
+                                            std::vector<unsigned> ())).first;
+      std::vector<unsigned> & common = set_it->second;
+      // Compute the intersection.
+      std::set_intersection 
+        (neighbours[v1-1].begin (), neighbours[v1-1].end (),
+         neighbours[v2-1].begin (), neighbours[v2-1].end (),
+         std::back_inserter (common));
+    }
 
   // Some statistics.
   std::cout << std::endl;
@@ -326,7 +350,7 @@ print_solution (StackElem const & solution)
 
   // Some statistics.
   std::cout << std::endl;
-  std::cout << "Generated states: " << states << std::endl;
+  std::cout << "generated states: " << states << std::endl;
 
   exit (EXIT_SUCCESS);
 }
@@ -357,12 +381,9 @@ try
       std::cout << std::endl;
     }
 
+  //unsigned old100k = 0;
   // Put initial state on the stack.
   stack.push (StackElem (max_edges, first_edge, 0));
-  // Main loop.
-  unsigned old100k = 0;
-  std::set<StackElem> all;
-  all.insert (StackElem (max_edges, first_edge, 0));
   while (! stack.empty ())
     {
       assert (stack.size () <= edge_count * 2 + 1);
@@ -370,6 +391,7 @@ try
       // Select top element of DFS stack.
       StackElem & el = stack.top ();
 
+      /*
       // Some debugging output.
       if (states / 100000 != old100k)
         {
@@ -379,6 +401,7 @@ try
                     << " current element uses " << el.used_edges 
                     << " edges" << std::endl;
         }
+      */
 
       // Is this the solution?
       if (el.used_edges == edge_count)
@@ -412,8 +435,6 @@ try
         {
           newel.valid[inserted] = true;
           stack.push (newel);
-          std::pair<std::set<StackElem>::iterator, bool> r = all.insert (newel);
-          assert (r.second == true);
           states += 1;
           continue;
         }
@@ -431,8 +452,6 @@ try
           newel.colour[inserted] = false;
           newel.valid[inserted] = true;
           stack.push (newel);
-          std::pair<std::set<StackElem>::iterator, bool> r = all.insert (newel);
-          assert (r.second == true);
           states += 1;
         }
 
@@ -444,8 +463,6 @@ try
           newel.colour[inserted] = true;
           newel.valid[inserted] = true;
           stack.push (newel);
-          std::pair<std::set<StackElem>::iterator, bool> r = all.insert (newel);
-          assert (r.second == true);
           states += 1;
         }
     }
