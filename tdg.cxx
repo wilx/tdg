@@ -32,6 +32,24 @@ struct StackElem
   StackElem (unsigned width, unsigned nxt, unsigned used)
     : colour (width), valid (width), next (nxt), used_edges (used)
   { }
+
+  bool operator == (StackElem const & x) const
+  {
+    return colour == x.colour && valid == x.valid;
+  }
+
+  bool operator < (StackElem const & x) const
+  {
+    if (valid < x.valid)
+      return true;
+    else if (valid == x.valid)
+      if (colour < x.colour)
+        return true;
+      else
+        return false;
+    else
+      return false;
+  }
 };
 
 
@@ -76,6 +94,8 @@ unsigned max_edges = 0;
 unsigned edge_count = 0;
 //! First edge.
 unsigned first_edge = 0;
+//! Number of generated states.
+unsigned states = 1;
 //! Upper triangle matrix representing the graph.
 Graph * graph = 0;
 
@@ -158,7 +178,7 @@ std::pair<bool, bool>
 check_triangle (StackElem const & el, unsigned edge)
 {
   assert (edges[edge]);
-  assert (el.valid[edge]);
+  //assert (el.valid[edge]);
 
   unsigned const v1 = edgeinfo[edge].v1;
   unsigned const v2 = edgeinfo[edge].v2;
@@ -183,7 +203,7 @@ check_triangle (StackElem const & el, unsigned edge)
     would create a triangle.  */
   std::pair<bool, bool> res (false, false);
   for (CommonVertices::const_iterator it = common.begin ();
-       it != common.end () || (res.first && res.second);
+       it != common.end () && !(res.first && res.second);
        ++it)
     {
       unsigned const u = *it;
@@ -219,14 +239,15 @@ read_graph (std::istream & infile)
   // Allocate and initialize structures.
   init_structures ();
   // Read the graph from input the file.
-  unsigned last = 0;
+  unsigned last = std::numeric_limits<unsigned>::max ();
   for (unsigned i = 1; i <= N; ++i)
     for (unsigned j = 1; j <= N; ++j)
       {
-        unsigned val;
         // Read edge from file.
+        unsigned val;
         infile >> val;
 
+        // Ignore everything that is bellow matrix' diagonal. 
         if (i > j)
           continue;
 
@@ -239,16 +260,13 @@ read_graph (std::istream & infile)
             edge_count += 1;
 
             // Record the neighbourness of the two vertices.
-            if (j != i)
-              {
-                neighbours[j-1].insert (i);
-                neighbours[i-1].insert (j);
-              }
+            neighbours[j-1].insert (i);
+            neighbours[i-1].insert (j);
             
             unsigned const idx = index_for_xy (j, i);
 
             // Is this the first edge that we see?
-            if (!last)
+            if (last == std::numeric_limits<unsigned>::max ())
               {
                 // Yes. No successor edge yet, next loop will set it.
                 edgeinfo[idx] = EdgeInfo (j, i);
@@ -258,11 +276,11 @@ read_graph (std::istream & infile)
               {
                 // Set successor of the previous edge.
                 edgeinfo[last].next = idx;
-                // Successor will be set successor edge.
+                // Successor of this edge will be set in the next loop.
                 edgeinfo[idx] = EdgeInfo (j, i);
 
                 // Debug.
-                std::cerr << " successor edge " << idx << std::endl;
+                std::cout << " successor edge " << idx << std::endl;
               }
             // Update bitmap of valid edges.
             edges[idx] = true;
@@ -270,13 +288,16 @@ read_graph (std::istream & infile)
             last = idx;
 
             // Debug.
-            std::cerr << "edge " << idx << " vertices (" << j << ", " << i << ")";
+            std::cout << "edge " << idx << " vertices (" << j << ", " << i << ")";
           }
       }
   // The last edge doesn't have any successor.
   edgeinfo[last].next = std::numeric_limits<unsigned>::max ();
-  // We have counted each edge twice. Fixing it now.
-  //edge_count /= 2;
+
+  // Some statistics.
+  std::cout << std::endl;
+  std::cout << "N: " << N << std::endl;
+  std::cout << "edges: " << edge_count << std::endl;
 }
 
 
@@ -304,8 +325,8 @@ print_solution (StackElem const & solution)
   std::cout << std::endl;
 
   // Some statistics.
-  std::cout << "N: " << N << std::endl;
-  std::cout << "edges: " << edge_count << std::endl;
+  std::cout << std::endl;
+  std::cout << "Generated states: " << states << std::endl;
 
   exit (EXIT_SUCCESS);
 }
@@ -339,10 +360,25 @@ try
   // Put initial state on the stack.
   stack.push (StackElem (max_edges, first_edge, 0));
   // Main loop.
+  unsigned old100k = 0;
+  std::set<StackElem> all;
+  all.insert (StackElem (max_edges, first_edge, 0));
   while (! stack.empty ())
     {
+      assert (stack.size () <= edge_count * 2 + 1);
+
       // Select top element of DFS stack.
       StackElem & el = stack.top ();
+
+      // Some debugging output.
+      if (states / 100000 != old100k)
+        {
+          old100k = states / 100000;
+          std::cout << states << " states expanded so far,"
+                    << " stack depth: " << stack.size () 
+                    << " current element uses " << el.used_edges 
+                    << " edges" << std::endl;
+        }
 
       // Is this the solution?
       if (el.used_edges == edge_count)
@@ -361,18 +397,27 @@ try
       // Save the number of the soon to be used edge.
       unsigned const inserted = el.next;
       // Adjust the pointer to next edge.
-      el.next = edgeinfo[el.next].next;
+      el.next = edgeinfo[inserted].next;
 
       /* el:    [1 0 0 ... 0]
          |
          v
          newel: [1 1 0 ... 0]  */
       StackElem newel (el);
-      // Add inserted edge to the set of used edges.
-      newel.valid[inserted] = true;
       // Increment used edges counter for the new element.
       newel.used_edges = el.used_edges + 1;
       
+      // Loops cannot create triangle so we colour them with one colour and continue.
+      if (edgeinfo[inserted].v1 == edgeinfo[inserted].v2)
+        {
+          newel.valid[inserted] = true;
+          stack.push (newel);
+          std::pair<std::set<StackElem>::iterator, bool> r = all.insert (newel);
+          assert (r.second == true);
+          states += 1;
+          continue;
+        }
+
       /*
         Check whether the new state is a valid one, i.e. that adding the edge
         with either colour won't result in a monochromatic triangle.  */
@@ -384,7 +429,11 @@ try
       if (res.first == false)
         {
           newel.colour[inserted] = false;
+          newel.valid[inserted] = true;
           stack.push (newel);
+          std::pair<std::set<StackElem>::iterator, bool> r = all.insert (newel);
+          assert (r.second == true);
+          states += 1;
         }
 
       /*
@@ -393,7 +442,11 @@ try
       if (res.second == false)
         {
           newel.colour[inserted] = true;
+          newel.valid[inserted] = true;
           stack.push (newel);
+          std::pair<std::set<StackElem>::iterator, bool> r = all.insert (newel);
+          assert (r.second == true);
+          states += 1;
         }
     }
 
